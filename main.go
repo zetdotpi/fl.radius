@@ -9,7 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	// "time"
+	"time"
 )
 
 type radiusService struct{}
@@ -20,65 +20,61 @@ func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 	npac := request.Reply()
 	switch request.Code {
 	case radius.AccessRequest:
-		log.Print(request.GetNASIdentifier())
-		log.Print(request.GetNasIpAddress())
-		log.Print(request.GetUsername())
-		log.Print(request.GetPassword())
-		log.Print(request.GetCalledStationId())
-		// check username and password
-		if request.GetUsername() == "a" && request.GetPassword() == "a" {
-			npac.Code = radius.AccessAccept
-			return npac
-		} else {
+		hotspotName := request.GetNASIdentifier()
+		username := request.GetUsername()
+		mac := username[2:]
+		password := request.GetPassword()
+		calledStationId := request.GetCalledStationId()
+		fmt.Printf("hotspotName %v, username %v, password %v, calledStationId %v\n", hotspotName, username, password, calledStationId)
+		row := database.QueryRow("SELECT * FROM hs_mac_phone_pair WHERE mac=$1", mac)
+
+		var (
+			rec_mac         string
+			rec_phone       string
+			rec_valid_until time.Time
+		)
+
+		sqlerr = nil
+		sqlerr = row.Scan(&rec_mac, &rec_phone, &rec_valid_until)
+		if sqlerr != nil {
+			fmt.Print("Fuck ya, sql error\n")
+			fmt.Print("=================\n")
+			fmt.Print(sqlerr)
 			npac.Code = radius.AccessReject
-			npac.AVPs = append(npac.AVPs, radius.AVP{Type: radius.ReplyMessage, Value: []byte("Your message here")})
-			return npac
+		} else if time.Now().Before(rec_valid_until) {
+			fmt.Print("Here you go")
+			npac.Code = radius.AccessAccept
+			// TODO: add session duration and idle timeout
+			// TODO: Add Login record to database yo!
+		} else {
+			fmt.Print("No way, your token is expired")
+			// Delete record and reject
+			npac.Code = radius.AccessReject
+			npac.AVPs = append(npac.AVPs, radius.AVP{Type: radius.ReplyMessage, Value: []byte("No way for you, inglorious scum!")})
 		}
+		return npac
+
 	case radius.AccountingRequest:
 		// accounting start or end
 		npac.Code = radius.AccountingResponse
 		return npac
 	default:
-		npac.Code = radius.AccessAccept
+		npac.Code = radius.AccessReject
 		return npac
 	}
 }
 
+var (
+	database *sql.DB
+	sqlerr   error
+)
+
 func main() {
-	db, err := sql.Open("postgres", "host=213.129.63.88 user=feedlikes dbname=feedlikes password='it is a secure password' sslmode=disable")
-	if err != nil {
+	database, sqlerr = sql.Open("postgres", "host=213.129.63.88 user=feedlikes dbname=feedlikes password='it is a secure password' sslmode=disable")
+	if sqlerr != nil {
 		log.Print("Error connecting to database")
-		panic(err)
+		panic(sqlerr)
 	}
-	log.Print(db)
-
-	// rows, err := db.Query("SELECT * FROM hs_mac_phone_pair")
-	// if err != nil {
-	// 	log.Print("Error quering database")
-	// 	panic(err)
-	// }
-
-	// var (
-	// 	mac         string
-	// 	phone       string
-	// 	valid_until time.Time
-	// )
-	// log.Print(rows.Columns())
-
-	// for rows.Next() {
-	// 	err := rows.Scan(&mac, &phone, &valid_until)
-
-	// 	if err != nil {
-	// 		log.Print("Error scanning row")
-	// 		log.Print(err)
-	// 	}
-
-	// 	log.Print(mac, phone, valid_until)
-	// 	log.Print(time.Now().Before(valid_until))
-	// }
-
-	// rows.Close()
-
 	s := radius.NewServer(":1812", "secret", radiusService{})
 
 	signalChan := make(chan os.Signal, 1)
