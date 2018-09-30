@@ -2,12 +2,14 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/bronze1man/radius"
 	_ "github.com/lib/pq"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -92,15 +94,60 @@ func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 var (
 	database *sql.DB
 	sqlerr   error
+
+	srvPort   uint16
+	srvSecret string
+
+	host    string
+	port    uint16
+	dbname  string
+	dbuser  string
+	dbpass  string
+	sslmode string = "disable"
+)
+
+const (
+	helptext = `
+Feedlikes.Radius help
+=====================
+
+To run this application properly you need to define environment variables:
+
+RAD_DBHOST (optional, defaults to "localhost") - database host
+RAD_DBPORT (optional, defaults to 5432) - database port
+RAD_DBNAME - database name
+RAD_DBUSER - database username
+RAD_DBPASS - database password
+
+SRV_PORT - port, on which radius server itself works
+SRV_SECRET - secret for radius server
+`
 )
 
 func main() {
-	database, sqlerr = sql.Open("postgres", "host=213.129.63.88 user=feedlikes dbname=feedlikes_test password='it is a secure password' sslmode=disable")
+	for _, arg := range os.Args {
+		if arg == "-h" || arg == "--help" {
+			fmt.Print(helptext)
+			os.Exit(0)
+		}
+	}
+
+	err := readEnv()
+	if err != nil {
+		fmt.Print(err)
+		os.Exit(0)
+	}
+
+	sqlConnectionString := fmt.Sprintf("host=%v port=%v dbname=%v user=%v password='%v' sslmode=%v", host, port, dbname, dbuser, dbpass, sslmode)
+
+	database, sqlerr = sql.Open("postgres", sqlConnectionString)
+
 	if sqlerr != nil {
 		log.Print("Error connecting to database")
 		panic(sqlerr)
 	}
-	s := radius.NewServer(":1812", "secret", radiusService{})
+	serverHost := fmt.Sprintf(":%v", srvPort)
+	s := radius.NewServer(serverHost, srvSecret, radiusService{})
 
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
@@ -121,4 +168,59 @@ func main() {
 	}
 }
 
-// TODO: move settings to external file
+func readEnv() error {
+	var errDesc string = ""
+
+	srvPortStr := os.Getenv("SRV_PORT")
+	if srvPortStr == "" {
+		srvPort = 1812
+	} else {
+		if srvPortNum, err := strconv.ParseUint(srvPortStr, 10, 16); err == nil {
+			srvPort = uint16(srvPortNum)
+		} else {
+			errDesc += "SRV_PORT: " + err.Error() + "\n"
+		}
+	}
+
+	srvSecret = os.Getenv("RAD_SECRET")
+	if srvSecret == "" {
+		errDesc += "RAD_SECRET isn't defined.\n"
+	}
+
+	host = os.Getenv("RAD_DBHOST")
+	if host == "" {
+		host = "localhost"
+	}
+
+	portStr := os.Getenv("RAD_DBPORT")
+	if portStr == "" {
+		port = 5432
+	} else {
+		if portNum, err := strconv.ParseUint(portStr, 10, 16); err == nil {
+			port = uint16(portNum)
+		} else {
+			errDesc += "RAD_DBPORT: " + err.Error() + "\n"
+		}
+	}
+
+	dbname = os.Getenv("RAD_DBNAME")
+	if dbname == "" {
+		errDesc += "RAD_DBNAME isn't defined.\n"
+	}
+
+	dbuser = os.Getenv("RAD_DBUSER")
+	if dbuser == "" {
+		errDesc += "RAD_DBUSER isn't defined.\n"
+	}
+
+	dbpass = os.Getenv("RAD_DBPASS")
+	if dbpass == "" {
+		errDesc += "RAD_DBPASS isn't defined.\n"
+	}
+
+	if errDesc == "" {
+		return nil
+	} else {
+		return errors.New(errDesc)
+	}
+}
