@@ -91,6 +91,19 @@ func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 	}
 }
 
+type Config struct {
+	SQLAddress string
+	SQLPort    string
+	DBName     string
+	DBUsername string
+	DBPass     string
+}
+
+func (c Config) readFromEnv() {
+	c.os.Getenv("dbhost")
+	os.Getenv("dbname")
+}
+
 var (
 	database *sql.DB
 	sqlerr   error
@@ -124,7 +137,18 @@ SRV_SECRET - secret for radius server
 `
 )
 
+const (
+	DB_HOST     = "localhost"
+	DB_NAME     = "feedlikes"
+	DB_USERNAME = "feedlikes"
+	DB_PASSWORD = "it is a secure password"
+)
+
+func readConfig() {
+}
+
 func main() {
+<<<<<<< HEAD
 	for _, arg := range os.Args {
 		if arg == "-h" || arg == "--help" {
 			fmt.Print(helptext)
@@ -142,12 +166,22 @@ func main() {
 
 	database, sqlerr = sql.Open("postgres", sqlConnectionString)
 
+=======
+	// database, sqlerr = sql.Open("postgres", "host=213.129.63.88 user=feedlikes dbname=feedlikes_test password='it is a secure password' sslmode=disable")
+	database, sqlerr = sql.Open("postgres", "host=feedlikes.ru user=feedlikes dbname=feedlikes_test password='it is a secure password' sslmode=disable")
+>>>>>>> 616d09e8dd8c05373867a513a8b095c8a83d711c
 	if sqlerr != nil {
 		log.Print("Error connecting to database")
 		panic(sqlerr)
 	}
+<<<<<<< HEAD
 	serverHost := fmt.Sprintf(":%v", srvPort)
 	s := radius.NewServer(serverHost, srvSecret, radiusService{})
+=======
+
+	defer database.Close()
+	s := radius.NewServer(":1812", "secret", radiusService{})
+>>>>>>> 616d09e8dd8c05373867a513a8b095c8a83d711c
 
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
