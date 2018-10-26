@@ -7,6 +7,7 @@ import (
 	"github.com/bronze1man/radius"
 	_ "github.com/lib/pq"
 	"log"
+	// "log/syslog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -18,33 +19,30 @@ type radiusService struct{}
 
 func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 	// a pretty print of the request.
-	fmt.Printf("[Authenticate] %s\n", request.String())
+	// log.Printf("[Authenticate] %s\n", request.String())
 	npac := request.Reply()
 	switch request.Code {
 	case radius.AccessRequest:
-		hotspotName := request.GetNASIdentifier()
 		username := request.GetUsername()
-		mac := username[2:]
-		password := request.GetPassword()
+		mac := username
 		identity := request.GetCalledStationId()
-		log.Println("hotspotName = %v, username = %v, password = %v, identity (calledStationId) = %v\n", hotspotName, username, password, identity)
 
 		var (
 			rec_mac         string
 			rec_phone       string
 			rec_valid_until time.Time
+			rec_validated   bool
 		)
 
-		sqlerr = nil
+		// return Reject-Access by default
+		npac.Code = radius.AccessReject
 
-		sqlerr = database.QueryRow("SELECT * FROM hs_mac_phone_pair WHERE mac=$1", mac).Scan(&rec_mac, &rec_phone, &rec_valid_until)
+		sqlerr = nil
+		sqlerr = database.QueryRow("SELECT * FROM hs_mac_phone_pair WHERE mac=$1", mac).Scan(&rec_mac, &rec_phone, &rec_valid_until, &rec_validated)
 		if sqlerr != nil {
-			log.Println("SQL error")
-			log.Println("=========")
-			log.Println(sqlerr)
-			npac.Code = radius.AccessReject
-		} else if time.Now().Before(rec_valid_until) {
-			log.Println("Login successfull")
+			log.Printf("<SQL ERROR>: no pair found with mac = %v. %v\n", mac, sqlerr)
+		} else if time.Now().Before(rec_valid_until) && rec_validated {
+			// log.Println("Login successfull")
 			npac.Code = radius.AccessAccept
 
 			npac.AVPs = append(npac.AVPs,
@@ -52,33 +50,36 @@ func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 				radius.AVP{Type: radius.IdleTimeout, Value: []byte("10800")},    // 3 hours too
 			)
 
-			// TODO: Add Login record to database yo!
+			// Adding Login record to database
 			var hotspot_id, loginrecord_id int
 
 			sqlerr = database.QueryRow("SELECT id FROM hotspot WHERE identity=$1", identity).Scan(&hotspot_id)
 			if sqlerr != nil {
-				log.Println("Cannot get hotspot identity")
-				log.Println(sqlerr)
+				log.Printf("<SQL ERROR>: no hotspot %v found. %v\n", identity, sqlerr)
 				sqlerr = nil
 			}
-			sqlerr = database.QueryRow("INSERT INTO loginrecord (datetime, method, access_token) VALUES ($1, $2, $3) RETURNING id", time.Now(), "radius", "_").Scan(&loginrecord_id)
+			sqlerr = database.QueryRow("INSERT INTO loginrecord (datetime, method, access_token, phone, hotspot_id) VALUES ($1, $2, $3, $4, $5) RETURNING id", time.Now(), "radius", "_", rec_phone, hotspot_id).Scan(&loginrecord_id)
 			if sqlerr != nil {
-				log.Println("Cannot insert loginrecord")
-				log.Println(sqlerr)
+				log.Printf("<SQL ERROR>: cannot insert login record. %v\n", sqlerr)
 				sqlerr = nil
 			}
 
-			log.Println("LoginRecord number %v", loginrecord_id)
+			log.Printf("LoginRecord number %v\n", loginrecord_id)
 
 		} else {
-			log.Println("Expired token")
-
 			var deleted_id int
 			sqlerr = database.QueryRow("DELETE FROM hs_mac_phone_pair WHERE mac=$1", mac).Scan(&deleted_id)
-			log.Println("Deleted hs_mac_phone_pair record with id = $1", deleted_id)
+			log.Printf("EXPIRED pair. Deleted hs_mac_phone_pair %v\n", deleted_id)
 			npac.Code = radius.AccessReject
 			npac.AVPs = append(npac.AVPs, radius.AVP{Type: radius.ReplyMessage, Value: []byte("The token is invalid, please login")})
 		}
+
+		if npac.Code == radius.AccessAccept {
+			log.Printf("ACCEPT %v @ %v\n", username, identity)
+		} else if npac.Code == radius.AccessReject {
+			log.Printf("REJECT %v @ %v\n", username, identity)
+		}
+
 		return npac
 
 	case radius.AccountingRequest:
@@ -127,14 +128,19 @@ SRV_SECRET - secret for radius server
 func main() {
 	for _, arg := range os.Args {
 		if arg == "-h" || arg == "--help" {
-			fmt.Print(helptext)
+			log.Print(helptext)
 			os.Exit(0)
 		}
 	}
 
+	// logwriter, e := syslog.New(syslog.LOG_NOTICE, "flRadius")
+	// if e == nil {
+	// 	log.SetOutput(logwriter)
+	// }
+
 	err := readEnv()
 	if err != nil {
-		fmt.Print(err)
+		log.Print(err)
 		os.Exit(0)
 	}
 
@@ -154,7 +160,7 @@ func main() {
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
 	errChan := make(chan error)
 	go func() {
-		fmt.Println("waiting for packets...")
+		log.Println("waiting for packets...")
 		err := s.ListenAndServe()
 		if err != nil {
 			errChan <- err
@@ -165,7 +171,7 @@ func main() {
 		log.Println("stopping server...")
 		s.Stop()
 	case err := <-errChan:
-		log.Println("[ERR] %v", err.Error())
+		log.Printf("[ERR] %v\n", err.Error())
 	}
 }
 
