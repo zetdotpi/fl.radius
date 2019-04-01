@@ -4,9 +4,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
+
 	"github.com/bronze1man/radius"
 	_ "github.com/lib/pq"
-	"log"
+
 	// "log/syslog"
 	"os"
 	"os/signal"
@@ -67,9 +69,11 @@ func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 			log.Printf("LoginRecord number %v\n", loginrecord_id)
 
 		} else {
-			var deleted_id int
-			sqlerr = database.QueryRow("DELETE FROM hs_mac_phone_pair WHERE mac=$1", mac).Scan(&deleted_id)
-			log.Printf("EXPIRED pair. Deleted hs_mac_phone_pair %v\n", deleted_id)
+			if time.Now().After(rec_valid_until) {
+				var deleted_id int
+				sqlerr = database.QueryRow("DELETE FROM hs_mac_phone_pair WHERE mac=$1", mac).Scan(&deleted_id)
+				log.Printf("EXPIRED pair. Deleted hs_mac_phone_pair %v\n", deleted_id)
+			}
 			npac.Code = radius.AccessReject
 			npac.AVPs = append(npac.AVPs, radius.AVP{Type: radius.ReplyMessage, Value: []byte("The token is invalid, please login")})
 		}
