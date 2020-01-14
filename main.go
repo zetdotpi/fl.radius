@@ -29,22 +29,43 @@ func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 		mac := username
 		identity := request.GetCalledStationId()
 
+		if identity == "1_zetdotpi@home_116" {
+			npac.AddVSA(radius.VSA{
+				Vendor: 14122,
+				Type:   4,
+				Value:  []byte("http://begovel-yakutsk.ru"),
+			})
+		}
+
 		var (
-			rec_mac         string
-			rec_phone       string
-			rec_valid_until time.Time
-			rec_validated   bool
+			recMac        string
+			recPhone      string
+			recValidUntil time.Time
+			recValidated  bool
+
+			hotspotPaidUntil time.Time
 		)
 
 		// return Reject-Access by default
 		npac.Code = radius.AccessReject
-
 		sqlerr = nil
-		sqlerr = database.QueryRow("SELECT * FROM hs_mac_phone_pair WHERE mac=$1", mac).Scan(&rec_mac, &rec_phone, &rec_valid_until, &rec_validated)
+
+		// checking if hotspot is paid
+		sqlerr = database.QueryRow("SELECT paid_until FROM hotspot WHERE identity=$1", identity).Scan(&hotspotPaidUntil)
+		if sqlerr != nil {
+			log.Printf("<SQL ERROR>: not found record in HOTSPOT table for $v", identity)
+			npac.Code = radius.AccessReject
+			return npac
+		} else if time.Now().After(hotspotPaidUntil) {
+			npac.Code = radius.AccessReject
+			return npac
+		}
+
+		// checking if mac-phone is valid
+		sqlerr = database.QueryRow("SELECT * FROM hs_mac_phone_pair WHERE mac=$1", mac).Scan(&recMac, &recPhone, &recValidUntil, &recValidated)
 		if sqlerr != nil {
 			log.Printf("<SQL ERROR>: no pair found with mac = %v. %v\n", mac, sqlerr)
-		} else if time.Now().Before(rec_valid_until) && rec_validated {
-			// log.Println("Login successfull")
+		} else if time.Now().Before(recValidUntil) && recValidated {
 			npac.Code = radius.AccessAccept
 
 			npac.AVPs = append(npac.AVPs,
@@ -53,26 +74,26 @@ func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 			)
 
 			// Adding Login record to database
-			var hotspot_id, loginrecord_id int
+			var hotspotId, loginrecordId int
 
-			sqlerr = database.QueryRow("SELECT id FROM hotspot WHERE identity=$1", identity).Scan(&hotspot_id)
+			sqlerr = database.QueryRow("SELECT id FROM hotspot WHERE identity=$1", identity).Scan(&hotspotId)
 			if sqlerr != nil {
 				log.Printf("<SQL ERROR>: no hotspot %v found. %v\n", identity, sqlerr)
 				sqlerr = nil
 			}
-			sqlerr = database.QueryRow("INSERT INTO loginrecord (datetime, method, access_token, phone, hotspot_id) VALUES ($1, $2, $3, $4, $5) RETURNING id", time.Now(), "radius", "_", rec_phone, hotspot_id).Scan(&loginrecord_id)
+			sqlerr = database.QueryRow("INSERT INTO loginrecord (datetime, method, access_token, phone, hotspot_id) VALUES ($1, $2, $3, $4, $5) RETURNING id", time.Now(), "radius", "_", recPhone, hotspotId).Scan(&loginrecordId)
 			if sqlerr != nil {
 				log.Printf("<SQL ERROR>: cannot insert login record. %v\n", sqlerr)
 				sqlerr = nil
 			}
 
-			log.Printf("LoginRecord number %v\n", loginrecord_id)
+			log.Printf("LoginRecord number %v\n", loginrecordId)
 
 		} else {
-			if time.Now().After(rec_valid_until) {
-				var deleted_id int
-				sqlerr = database.QueryRow("DELETE FROM hs_mac_phone_pair WHERE mac=$1", mac).Scan(&deleted_id)
-				log.Printf("EXPIRED pair. Deleted hs_mac_phone_pair %v\n", deleted_id)
+			if time.Now().After(recValidUntil) {
+				var deletedId int
+				sqlerr = database.QueryRow("DELETE FROM hs_mac_phone_pair WHERE mac=$1", mac).Scan(&deletedId)
+				log.Printf("EXPIRED pair. Deleted hs_mac_phone_pair %v\n", deletedId)
 			}
 			npac.Code = radius.AccessReject
 			npac.AVPs = append(npac.AVPs, radius.AVP{Type: radius.ReplyMessage, Value: []byte("The token is invalid, please login")})
@@ -136,11 +157,6 @@ func main() {
 			os.Exit(0)
 		}
 	}
-
-	// logwriter, e := syslog.New(syslog.LOG_NOTICE, "flRadius")
-	// if e == nil {
-	// 	log.SetOutput(logwriter)
-	// }
 
 	err := readEnv()
 	if err != nil {
