@@ -19,6 +19,60 @@ import (
 
 type radiusService struct{}
 
+type HotspotParams struct {
+	identity       string
+	socialsEnabled bool
+	redirectionURL string
+	paidUntil      time.Time
+}
+
+func (h HotspotParams) isActive() bool {
+	// return true if hotspot is paid
+	return time.Now().Before(h.paidUntil)
+}
+
+func getHotspotParams(identity string) (HotspotParams, error) {
+	hp := HotspotParams{}
+	err := database.QueryRow("SELECT identity, socials_enabled, redirection_url, paid_until FROM hotspot WHERE identity=$1", identity).Scan(&hp)
+	return hp, err
+}
+
+type HSMacPhonePair struct {
+	mac        string
+	phone      string
+	validUntil time.Time
+	validated  bool
+}
+
+func getPairByMAC(mac string) (HSMacPhonePair, error) {
+	pair := HSMacPhonePair{}
+	sqlerr := database.QueryRow("SELECT * FROM hs_mac_phone_pair WHERE mac=$1", mac).Scan(&pair)
+	return pair, sqlerr
+}
+
+func (pair HSMacPhonePair) getLatestLogin() (LoginRecord, error) {
+	lr := LoginRecord{}
+	sqlerr := database.QueryRow("SELECT datetime, method FROM loginrecord WHERE phone=$1 ORDER BY id DESC LIMIT 1", pair.phone).Scan(&lr)
+	return lr, sqlerr
+}
+
+func (pair HSMacPhonePair) isSuitableForSocialLogin() bool {
+	lr, sqlerr := pair.getLatestLogin()
+	if sqlerr != nil {
+		return false
+	}
+	return (time.Since(lr.datetime).Hours() > 72) // 3 days since phone login
+}
+
+type LoginRecord struct {
+	datetime time.Time
+	method   string
+}
+
+// func (r LoginRecord) isSuitableForSocialLogin() {
+// 	time.Since(r.)
+// }
+
 func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 	// a pretty print of the request.
 	// log.Printf("[Authenticate] %s\n", request.String())
@@ -42,8 +96,7 @@ func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 			recPhone      string
 			recValidUntil time.Time
 			recValidated  bool
-
-			hotspotPaidUntil time.Time
+			// hotspotPaidUntil time.Time
 		)
 
 		// return Reject-Access by default
@@ -51,12 +104,14 @@ func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 		sqlerr = nil
 
 		// checking if hotspot is paid
-		sqlerr = database.QueryRow("SELECT paid_until FROM hotspot WHERE identity=$1", identity).Scan(&hotspotPaidUntil)
+		hs, sqlerr := getHotspotParams(identity)
+		// sqlerr = database.QueryRow("SELECT paid_until FROM hotspot WHERE identity=$1", identity).Scan(&hotspotPaidUntil)
 		if sqlerr != nil {
 			log.Printf("<SQL ERROR>: not found record in HOTSPOT table for $v", identity)
 			npac.Code = radius.AccessReject
 			return npac
-		} else if time.Now().After(hotspotPaidUntil) {
+		} else if !hs.isActive() {
+			// } else if time.Now().After(hotspotPaidUntil) {
 			npac.Code = radius.AccessReject
 			return npac
 		}
