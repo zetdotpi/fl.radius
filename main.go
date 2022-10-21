@@ -9,7 +9,6 @@ import (
 	"github.com/bronze1man/radius"
 	_ "github.com/lib/pq"
 
-	// "log/syslog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -69,13 +68,7 @@ type LoginRecord struct {
 	method   string
 }
 
-// func (r LoginRecord) isSuitableForSocialLogin() {
-// 	time.Since(r.)
-// }
-
 func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
-	// a pretty print of the request.
-	// log.Printf("[Authenticate] %s\n", request.String())
 	npac := request.Reply()
 	switch request.Code {
 	case radius.AccessRequest:
@@ -83,20 +76,11 @@ func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 		mac := username
 		identity := request.GetCalledStationId()
 
-		if identity == "1_zetdotpi@home_116" {
-			npac.AddVSA(radius.VSA{
-				Vendor: 14122,
-				Type:   4,
-				Value:  []byte("http://begovel-yakutsk.ru"),
-			})
-		}
-
 		var (
 			recMac        string
 			recPhone      string
 			recValidUntil time.Time
 			recValidated  bool
-			// hotspotPaidUntil time.Time
 		)
 
 		// return Reject-Access by default
@@ -105,13 +89,11 @@ func (p radiusService) RadiusHandle(request *radius.Packet) *radius.Packet {
 
 		// checking if hotspot is paid
 		hs, sqlerr := getHotspotParams(identity)
-		// sqlerr = database.QueryRow("SELECT paid_until FROM hotspot WHERE identity=$1", identity).Scan(&hotspotPaidUntil)
 		if sqlerr != nil {
 			log.Printf("<SQL ERROR>: not found record in HOTSPOT table for $v", identity)
 			npac.Code = radius.AccessReject
 			return npac
 		} else if !hs.isActive() {
-			// } else if time.Now().After(hotspotPaidUntil) {
 			npac.Code = radius.AccessReject
 			return npac
 		}
